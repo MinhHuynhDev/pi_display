@@ -17,12 +17,15 @@ Environment:
                    optional; YNAB category group IDs (otherwise matched by group name)
   TZ_NAME          optional; defaults to America/Los_Angeles
   REFRESH_SECONDS  optional; how often to pull from YNAB (default 300)
+  SYNC_BANKS_SECONDS optional; how often to ask YNAB to import new bank transactions,
+                   like pressing Import in the app (default 900; 0 = off)
   PORT             optional; default 8080
   YNAB_DEMO=1      serve fake data (for testing the layout)
 """
 import json
 import os
 import random
+import sys
 import threading
 import time
 import urllib.request
@@ -35,6 +38,9 @@ BUDGET = os.environ.get("YNAB_BUDGET_ID", "last-used")
 TZ = ZoneInfo(os.environ.get("TZ_NAME", "America/Los_Angeles"))
 REFRESH = int(os.environ.get("REFRESH_SECONDS", "300"))
 PORT = int(os.environ.get("PORT", "8080"))
+# How often to ask YNAB to import new transactions from your linked banks
+# (same as pressing Import in the app). 0 turns this off.
+SYNC_SECONDS = int(os.environ.get("SYNC_BANKS_SECONDS", "900"))
 DEMO = os.environ.get("YNAB_DEMO") == "1"
 
 # Category groups to total up. Each is matched by its YNAB group ID if you set the
@@ -55,6 +61,15 @@ def api_get(path):
     req = urllib.request.Request(f"https://api.ynab.com/v1/budgets/{BUDGET}/{path}",
                                  headers={"Authorization": f"Bearer {TOKEN}"})
     with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)["data"]
+
+
+def api_post(path):
+    """POST with an empty body (used to trigger YNAB's bank import)."""
+    req = urllib.request.Request(f"https://api.ynab.com/v1/budgets/{BUDGET}/{path}",
+                                 data=b"", method="POST",
+                                 headers={"Authorization": f"Bearer {TOKEN}"})
+    with urllib.request.urlopen(req, timeout=60) as r:
         return json.load(r)["data"]
 
 
@@ -191,12 +206,20 @@ def unknown_category_ids(txns, cat_group, ignore):
 def refresh_loop():
     cat_group = {}      # category_id -> (group_id, group_name); fetched once, kept in memory
     ignore = set()      # category IDs that stayed unknown even after a refetch
+    last_sync = 0.0
     while True:
         try:
             month_start = datetime.now(TZ).date().replace(day=1)
             if DEMO:
                 txns, cat_group = demo_data(month_start)
             else:
+                if SYNC_SECONDS and time.time() - last_sync >= SYNC_SECONDS:
+                    last_sync = time.time()  # set first so a failure doesn't retry every cycle
+                    try:
+                        api_post("transactions/import")
+                    except Exception as e:  # not fatal; we still show what YNAB has
+                        print(f"bank import request failed: {type(e).__name__}: {e}",
+                              file=sys.stderr, flush=True)
                 txns = fetch_transactions(month_start)
                 if not cat_group:
                     cat_group = fetch_category_groups()
