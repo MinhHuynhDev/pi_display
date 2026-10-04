@@ -130,10 +130,16 @@ def demo_data(since: date):
 
 
 def real_transactions(txns, today):
-    """Drop deleted rows, future-dated rows, transfers between your own accounts
-    (this keeps credit card payments from double counting), and starting balances."""
+    """Drop deleted rows, future-dated rows, uncategorized transfers between your own
+    accounts (this keeps credit card payments from double counting), and starting balances.
+
+    A transfer that HAS a category is kept: that is how YNAB records a payment to a
+    tracking account such as a mortgage (e.g. checking -> Mortgage, categorized
+    "Mortgage"), and it is real spending."""
     for t in txns:
-        if t.get("deleted") or t.get("transfer_account_id"):
+        if t.get("deleted"):
+            continue
+        if t.get("transfer_account_id") and not t.get("category_id"):
             continue
         if (t.get("payee_name") or "") == "Starting Balance":
             continue
@@ -147,8 +153,9 @@ def lines(t):
     subs = [s for s in t.get("subtransactions") or [] if not s.get("deleted")]
     if subs:
         for s in subs:
-            if not s.get("transfer_account_id"):
-                yield s["amount"], s.get("category_id"), s.get("category_name")
+            if s.get("transfer_account_id") and not s.get("category_id"):
+                continue  # uncategorized transfer between your own accounts
+            yield s["amount"], s.get("category_id"), s.get("category_name")
     else:
         yield t["amount"], t.get("category_id"), t.get("category_name")
 
